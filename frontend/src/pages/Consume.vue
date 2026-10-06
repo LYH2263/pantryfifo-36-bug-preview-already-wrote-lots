@@ -1,6 +1,6 @@
 <template>
   <div>
-    <h1>按临期消费 · 预演占用仅画面</h1>
+    <h1>按临期消费 · 预演只出票、不占余量</h1>
     <select v-model.number="item_id"><option v-for="i in items" :key="i.id" :value="i.id">{{ i.name }}</option></select>
     <input type="number" v-model.number="qty" />
     <button :disabled="busy" @click="preview">预演</button>

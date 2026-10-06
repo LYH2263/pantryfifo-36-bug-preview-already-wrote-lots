@@ -45,15 +45,20 @@ def reconcile_ticket(deductions: list[dict], current: dict[int, dict], today: st
             return {"ok": False, "reason": "qty_non_positive", "short": 0.0}
         total += take
         lot = current.get(lot_id)
-        if lot is None or lot.get("status") != "on_shelf":
-            # delisted: another consume emptied it or the expiry sweep ran.
+        if lot is None:
             reasons.add("lot_changed")
             short += take
             continue
         exp = lot.get("expiry")
         if exp and exp < today:
-            # date-expired even if the sweep has not flipped status yet.
+            # date-expired: the sweep may already have flipped status to
+            # 'expired', or the rollover happened and the sweep has not run yet.
             reasons.add("lot_expired")
+            short += take
+            continue
+        if lot.get("status") != "on_shelf":
+            # delisted for another reason: another consume emptied it.
+            reasons.add("lot_changed")
             short += take
             continue
         remain = float(lot.get("qty_remain", 0))
