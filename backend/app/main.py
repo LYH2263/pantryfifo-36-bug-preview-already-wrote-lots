@@ -1,4 +1,5 @@
 import json
+import math
 import uuid
 from datetime import date, datetime, timezone
 from fastapi import FastAPI, HTTPException
@@ -7,7 +8,6 @@ from pydantic import BaseModel
 from app import seed
 from app.db import connect
 from app.engines.fefo import consume_fefo, expire_lots, reconcile_ticket
-from app.engines import ticket_eager
 
 app = FastAPI(title="Pantryfifo", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -24,6 +24,8 @@ def items():
 
 @app.get("/api/fridge")
 def fridge(layer: str | None = None):
+    """Raw on-shelf rows. A preview ticket never moves these numbers; only a
+    confirmed consume, an inbound lot or the expiry sweep may."""
     c = connect()
     q = """SELECT lots.*, items.name, items.layer, items.unit FROM lots
            JOIN items ON items.id=lots.item_id WHERE lots.status='on_shelf'"""
@@ -31,17 +33,18 @@ def fridge(layer: str | None = None):
     if layer:
         q += " AND items.layer=?"; args.append(layer)
     rows = [dict(r) for r in c.execute(q, args)]
-    rows = ticket_eager.paint_fridge(rows, ticket_eager.load_open_tickets(c))
     c.close(); return rows
 
 @app.get("/api/alerts")
 def alerts():
+    """Urgent bar from true remainders only — open preview tickets are not
+    subtracted here, so the bar moves only when the shelf really changes."""
     c = connect()
     warn = int(c.execute("SELECT value FROM settings WHERE key='warn_days'").fetchone()["value"])
     today = date.today().isoformat()
-    rows = ticket_eager.paint_fridge([dict(r) for r in c.execute(
+    rows = [dict(r) for r in c.execute(
         """SELECT lots.*, items.name, items.layer FROM lots JOIN items ON items.id=lots.item_id
-           WHERE status='on_shelf' AND qty_remain>0 AND expiry IS NOT NULL""")], ticket_eager.load_open_tickets(c))
+           WHERE status='on_shelf' AND qty_remain>0 AND expiry IS NOT NULL""")]
     c.close()
     out = []
     for r in rows:
@@ -75,12 +78,17 @@ class ConsumeIn(BaseModel):
     qty: float
     note: str = ""
 
+def _require_positive_qty(qty: float):
+    """Reject non-positive and non-finite quantities before anything is
+    planned or persisted — a bad qty must fail outright and leave no ticket."""
+    if not math.isfinite(qty) or qty <= 0:
+        raise HTTPException(400, "qty_non_positive")
+
 @app.post("/api/consume")
 def consume(body: ConsumeIn):
     """Legacy one-shot consume. Plans and deducts inside a single write
     transaction so it cannot interleave with a ticket confirmation."""
-    if float(body.qty) <= 0:
-        raise HTTPException(400, "qty_non_positive")
+    _require_positive_qty(float(body.qty))
     c = connect()
     c.isolation_level = None
     c.execute("BEGIN IMMEDIATE")
@@ -116,8 +124,7 @@ def _fefo_lots(c, item_id: int) -> list[dict]:
 @app.post("/api/consume/preview")
 def consume_preview(body: ConsumeIn):
     """Dry run: pin lot/take into a one-shot ticket, never touch qty_remain."""
-    if float(body.qty) <= 0:
-        raise HTTPException(400, "qty_non_positive")
+    _require_positive_qty(float(body.qty))
     c = connect()
     item = c.execute("SELECT id FROM items WHERE id=?", (body.item_id,)).fetchone()
     if not item:

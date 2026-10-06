@@ -1,5 +1,7 @@
 """FEFO consume: earliest expiry first among positive remaining lots."""
 
+import math
+
 def sort_lots_fefo(lots: list[dict]) -> list[dict]:
     return sorted(
         [l for l in lots if float(l.get("qty_remain", 0)) > 0],
@@ -9,7 +11,7 @@ def sort_lots_fefo(lots: list[dict]) -> list[dict]:
 def consume_fefo(lots: list[dict], qty: float) -> dict:
     """Return deductions list and leftover demand. Mutates copies only."""
     need = float(qty)
-    if need <= 0:
+    if not math.isfinite(need) or need <= 0:
         return {"ok": False, "reason": "qty_non_positive", "deductions": [], "short": 0.0}
     ordered = sort_lots_fefo(lots)
     deductions = []
@@ -41,7 +43,7 @@ def reconcile_ticket(deductions: list[dict], current: dict[int, dict], today: st
     for d in deductions:
         lot_id = d["lot_id"]
         take = float(d["take"])
-        if take <= 0:
+        if not math.isfinite(take) or take <= 0:
             return {"ok": False, "reason": "qty_non_positive", "short": 0.0}
         total += take
         lot = current.get(lot_id)
